@@ -8,9 +8,6 @@ import taichi.math as tm
 
 @ti.data_oriented
 class Solver:
-    object_uav   = 0
-    object_ship  = 1
-
     def __init__(self,
                  res,
                  scale,
