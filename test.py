@@ -20,7 +20,7 @@ width = np.array([10, 15])
 MR = Solver([1000, 1000], 3, 1.0, substeps=1)
 MR.init_env(craft_type, craft_camp, x, length, width)
 info = MR.reset()
-print(info)
+# print(info)
 
 for frame in range(400):
     combined_actions = np.array([[0, 2], [0, 2]])

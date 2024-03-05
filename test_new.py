@@ -5,7 +5,7 @@ import taichi.math as tm
 import argparse
 import os
 
-ti.init(arch=ti.cuda)
+ti.init(arch=ti.cuda, debug=True)
 gui = ti.GUI("Demo2dim_Naive_Crafts", res=1024, background_color=0x112F41)
 
 
@@ -15,22 +15,22 @@ gui = ti.GUI("Demo2dim_Naive_Crafts", res=1024, background_color=0x112F41)
 # length = np.array([25, 35])
 # width = np.array([10, 15])
 
-x = np.random.uniform(low=0, high=1000, size=(500, 2))
-combined_actions = np.random.uniform(low=-0.5, high=0.5, size=(500, 2))
+x = np.random.uniform(low=0, high=1000, size=(100, 2))
+combined_actions = np.random.uniform(low=-0.5, high=0.5, size=(100, 2))
 # combined_actions = np.array([[0, 1]] * 500) * 0.1
-craft_type = np.ones(500)
-craft_camp = np.ones(500)
-length = np.ones(500)
-width = np.ones(500) * 10
+craft_type = np.ones(100)
+craft_camp = np.ones(100)
+length = np.ones(100)
+width = np.ones(100) * 10
 
-MR = Solver([1000, 1000], 3, 40.0, 120.0, substeps=1)
+MR = Solver('L-BFGS', [1000, 1000], 3, 60.0, 120.0, substeps=1)
 MR.init_env(craft_type, craft_camp, x, length, width)
 info = MR.reset()
 print(info)
 
 for frame in range(400):
     # combined_actions = np.array([[0, 0.2], [0, 0.2]])
-    info = MR.solver_step(combined_actions)
+    info = MR.optimize_LBFGS(combined_actions)
     # print(info['position']/1000)
     gui.circles(info['position']/1000,
                 radius=6,
@@ -41,7 +41,7 @@ for frame in range(400):
 
 for frame in range(400):
     # combined_actions = np.array([[0.1, 0], [-0.1, 0]])
-    info = MR.solver_step(combined_actions)
+    info = MR.optimize_LBFGS(combined_actions)
     # gui.circles(info['position']/1000,
     #             radius=6,
     #             color=np.array([0xED553B, 0xFFFF00],dtype=np.uint32))
