@@ -15,7 +15,10 @@ class Solver:
                  GridR,
                  d0,
                  control_freq=20,
-                 max_num=1024,
+                 max_num=2048,
+                 accuracy='f32',
+                 arch=ti.cuda,
+                 debug=False,
                  substeps=1,
                  ep_length=9999,
                  discrete=True):
@@ -23,10 +26,8 @@ class Solver:
         self.scale = scale
         self.max_num = max_num
         self.discrete = discrete
-        self.maxInGrid = 1024
+        self.maxInGrid = 2048
         self.max_iters = 10
-        self.tmp_value = ti.field(ti.f32, shape=())
-        self.tmp_value[None] = 0.0
 
         self.substeps = substeps
         self.ep_length = ep_length
@@ -37,14 +38,25 @@ class Solver:
         self.invGridR = 1 / GridR
         self.searchR = d0
         self.neighbor_grids = int(d0/GridR + 0.5)
-        self.coef = 0.01
+        self.coef = 0.005
+
+        self.accuracy = ti.f32
+        if accuracy == 'f64':
+            self.accuracy = ti.f64
+        else:
+            self.accuracy = ti.f32
+
+        # ti.init(arch=arch, debug=debug, default_fp=self.accuracy)
+
+        self.tmp_value = ti.field(self.accuracy, shape=())
+        self.tmp_value[None] = 0.0
 
         self.optimizer = optimizer  # GD, Newton, BFGS, L-BFGS
         if self.optimizer == 'L-BFGS':
-            self.m_iters = 10  # m = 5
-            # self.alpha_i = ti.field(ti.f32, shape=())
+            self.m_iters = 5  # m = 5
+            # self.alpha_i = ti.field(self.accuracy, shape=())
             # self.alpha_i[None] = 0.0
-            self.beta_i = ti.field(ti.f32, shape=())
+            self.beta_i = ti.field(self.accuracy, shape=())
             self.beta_i[None] = 0.0
 
 
@@ -55,12 +67,12 @@ class Solver:
         self.res = ti.Vector([res[0], res[1]])
         # self.global_E = 0.0
         # self.prev_global_E = 0.0
-        self.alpha = ti.field(ti.f32, shape=())
+        self.alpha = ti.field(self.accuracy, shape=())
         self.alpha_dec = 0.6
-        self.global_alpha_min = 0.01
+        self.global_alpha_min = 0.001
 
-        self.global_E = ti.field(ti.f32, shape=())
-        self.prev_global_E = ti.field(ti.f32, shape=())
+        self.global_E = ti.field(self.accuracy, shape=())
+        self.prev_global_E = ti.field(self.accuracy, shape=())
 
         # self.res = res
         self.n_neigbors = ti.field(ti.i32, shape=())
@@ -71,21 +83,21 @@ class Solver:
         self.craft_type = ti.field(dtype=ti.i32)
         self.craft_camp = ti.field(dtype=ti.i32)
 
-        self.x = ti.Vector.field(self.dim, dtype=ti.f32)
-        self.v = ti.Vector.field(self.dim, dtype=ti.f32)
-        self.gradient = ti.Vector.field(self.dim, dtype=ti.f32)
-        self.new_v = ti.Vector.field(self.dim, dtype=ti.f32)
-        self.new_pos = ti.Vector.field(self.dim, dtype=ti.f32)
+        self.x = ti.Vector.field(self.dim, dtype=self.accuracy)
+        self.v = ti.Vector.field(self.dim, dtype=self.accuracy)
+        self.gradient = ti.Vector.field(self.dim, dtype=self.accuracy)
+        self.new_v = ti.Vector.field(self.dim, dtype=self.accuracy)
+        self.new_pos = ti.Vector.field(self.dim, dtype=self.accuracy)
 
-        self.obstacle_pos = ti.Vector.field(self.dim, dtype=ti.f32)
-        self.obstacle_r = ti.field(dtype=ti.f32)
+        self.obstacle_pos = ti.Vector.field(self.dim, dtype=self.accuracy)
+        self.obstacle_r = ti.field(dtype=self.accuracy)
 
-        # self.diag = ti.Matrix.field(self.dim, self.dim, dtype=ti.f32)
+        # self.diag = ti.Matrix.field(self.dim, self.dim, dtype=self.accuracy)
 
-        self.length = ti.field(dtype=ti.f32)
-        self.width = ti.field(dtype=ti.f32)
-        self.half_slide = ti.field(dtype=ti.f32)
-        self.angle = ti.field(dtype=ti.f32)
+        self.length = ti.field(dtype=self.accuracy)
+        self.width = ti.field(dtype=self.accuracy)
+        self.half_slide = ti.field(dtype=self.accuracy)
+        self.angle = ti.field(dtype=self.accuracy)
 
         self.collided = ti.field(dtype=ti.i32)
 
@@ -105,64 +117,248 @@ class Solver:
         self.grid            = ti.field(dtype=ti.i32)
         # self.neighborCount   = ti.field(dtype=ti.i32)
         # self.neighbor        = ti.field(dtype=ti.i32)
-        # self.ao_gridCount    = ti.field(dtype=ti.i32)
-        # self.ao_grid         = ti.field(dtype=ti.i32)
         #
         # self.occupied_num    = ti.field(dtype=ti.i32, shape=())
         # self.occupied_index  = ti.field(dtype=ti.i32)
 
         self.blockSize       = ti.Vector.field(self.dim, dtype=ti.i32, shape=(1))
-        self.min_boundary    = ti.Vector.field(self.dim, dtype=ti.f32, shape=(1))
-        self.max_boundary    = ti.Vector.field(self.dim, dtype=ti.f32, shape=(1))
+        self.min_boundary    = ti.Vector.field(self.dim, dtype=self.accuracy, shape=(1))
+        self.max_boundary    = ti.Vector.field(self.dim, dtype=self.accuracy, shape=(1))
 
         self.maxNeighbourPair= self.n_crafts[None] * 1024
 
-        # self.maxAOPair = self.n_crafts[None] * self.n_obstacles[None]
-
         # self.candidate_neighbor   = ti.types.ndarray(dtype=ti.math.vec2, dim=self.maxNeighbourPair)
         self.candidate_neighbor   = ti.Vector.field(self.dim, dtype=ti.i32)
-        self.diag = ti.Matrix.field(self.dim, self.dim, dtype=ti.f32)
-
-        # self.candidate_ao = ti.Vector.field(self.dim, dtype=ti.i32)
-        # self.diag_ao = ti.Matrix.field(self.dim, self.dim, dtype=ti.f32)
+        self.diag = ti.Matrix.field(self.dim, self.dim, dtype=self.accuracy)
 
 
         # self.hash_grid = ti.root.dynamic(ti.i, self.max_num, chunk_size=None)
         # self.hash_neighbour = ti.root.dynamic(ti.ij, self.max_num, chunk_size=None)
         # Hash grids for aa
-        ti.root.dense(ti.i, self.max_num).place(self.gridCount)
-        ti.root.dense(ti.ij, (self.max_num, self.maxInGrid)).place(self.grid)
-        ti.root.dynamic(ti.i, self.maxNeighbourPair).place(self.candidate_neighbor, self.diag)
+        self.aa_root = ti.root
+        self.aa_root.dense(ti.i, self.max_num).place(self.gridCount)
+        self.aa_root.dense(ti.ij, (self.max_num, self.maxInGrid)).place(self.grid)
+        self.aa_root.dynamic(ti.i, self.maxNeighbourPair).place(self.candidate_neighbor, self.diag)
         # ti.root.dynamic(ti.i, self.maxAOPair).place(self.candidate_ao, self.diag_ao)
 
-        # Hash grids for ao
-        # ti.root.dense(ti.i, self.max_num).place(self.ao_gridCount)
-        # ti.root.dense(ti.ij, (self.max_num, self.n_obstacles[None])).place(self.ao_grid)
-        # ti.root.dynamic(ti.i, 1000).place(self.occupied_index)
 
         # ti.root.dense(ti.i, self.n_crafts[None]).place(self.neighborCount)
         # ti.root.dense(ti.ij, (self.n_crafts[None], self.maxNeighbour)).place(self.neighbor)
         #TODO: Using ti.root.pointer to activate sparse architectures
 
+    def setup_ao_grid_gpu(self):
+        self.ao_gridCount = ti.field(dtype=ti.i32)
+        self.ao_grid = ti.field(dtype=ti.i32)
+
+        self.maxAOPair = self.n_crafts[None] * self.n_obstacles[None]
+
+        self.candidate_ao = ti.Vector.field(self.dim, dtype=ti.i32)
+        self.diag_ao = ti.Matrix.field(self.dim, self.dim, dtype=self.accuracy)
+
+        # Hash grids for ao
+        self.ao_root = ti.root
+        self.ao_root.dense(ti.i, self.max_num).place(self.ao_gridCount)
+        self.ao_root.dense(ti.ij, (self.max_num, self.n_obstacles[None])).place(self.ao_grid)
+        self.ao_root.dynamic(ti.i, self.maxAOPair).place(self.candidate_ao, self.diag_ao)
+        # ti.root.dynamic(ti.i, 1000).place(self.occupied_index)
+
+        self.occupied_indexes = ti.field(ti.i32)
+        ti.root.dynamic(ti.i, self.maxAOPair).place(self.occupied_indexes)
+
+    def setup_line_obstacles(self, input_list):
+        '''
+        preprocess it in python scope
+        Input of the vertices should be like:
+        [[[x1, y1],
+          [x2, y2],
+          ```
+          ], ```
+          ]
+
+        '''
+        array_list = []
+        array_num = len(input_list)
+        for i in range(array_num):
+            sliced_array = input_list[i]
+            node_num = len(sliced_array)
+            for j in range(node_num):
+                if j != node_num - 1:
+                    array_list.append([sliced_array[j], sliced_array[j+1]])
+                else:
+                    array_list.append([sliced_array[j], sliced_array[0]])
+
+        vertice_num = len(array_list)
+        self.n_obstacles[None] = vertice_num
+        print(self.n_obstacles[None])
+
+        self.start_np = np.zeros((vertice_num, self.dim))
+        self.end_np = np.zeros((vertice_num, self.dim))
+        #These two numpy arrays are for rendering in taichi gui
+
+        self.obstacle_v = ti.Vector.field(self.dim, dtype=self.accuracy)
+        ti.root.dense(ti.ij, (vertice_num, self.dim)).place(self.obstacle_v)
+        for k in range(vertice_num):
+            for l in range(self.dim):
+                self.obstacle_v[k, l] = ti.Vector([array_list[k][l][0], array_list[k][l][1]])
+                self.start_np[k, l] = array_list[k][0][l]
+                self.end_np[k, l] = array_list[k][1][l]
+        #the cell in obstacle_v should be a vector of the coordinate of vertices,
+        #shape of it should be [n_lines, 2-dim]
+
+        self.start_np /= self.res[0]
+        self.end_np /= self.res[0]
+
+
+    @ti.func
+    def return_projection_point(self, v0, v1, p):
+        #normal point to outer:
+        #for example: start(0,0) end (3,0), normal:[0, 1]
+        #projection is weighted, for example ,if in line, 0<projection<1
+        d = v1 - v0
+        # v = ti.Vector([-d.y, d.x]) / tm.length(d)
+        projection = (p - v0).dot(d) / d.dot(d)
+        return d, projection
+
+    @ti.func
+    def return_distance(self, v0, v1, p):
+        d = v1 - v0
+        # v = ti.Vector([-d.y, d.x]) / tm.length(d)
+        projection = (p - v0).dot(d) / d.dot(d)
+        p_point = v0 + projection * d
+        return tm.length(p - p_point)
+
+    @ti.kernel
+    def init_obstacle_grid(self):
+        #from starting grid[i,j] to ending[m,n], find each grids' middle points' distances to the line
+        #if the distance is smaller than searchR + 0.5 * hashgrids' length. Then the hash grid is occupied
+        #by the obstacle
+        valid_distance = self.searchR + 0.7 * self.GridR
+        for i in range(self.n_obstacles[None]):
+            #i is the index of the lines
+            v0 = self.obstacle_v[i, 0]
+            v1 = self.obstacle_v[i, 1]
+            indexV0 = ti.cast(v0 * self.invGridR, ti.i32)
+            indexV1 = ti.cast(v1 * self.invGridR, ti.i32)
+
+            v0x, v0y = indexV0[0], indexV0[1]
+            v1x, v1y = indexV1[0], indexV1[1]
+
+            for m in range(v0x, v1x + 1):
+                for n in range(v0y, v1y + 1):
+                    vmx = (ti.cast(m, self.accuracy) + 0.5) * self.GridR
+                    vmy = (ti.cast(n, self.accuracy) + 0.5) * self.GridR
+
+                    indexM = ti.Vector([m, n])
+
+                    middle_point = ti.Vector([vmx, vmy])
+                    distance = self.return_distance(v0, v1, middle_point)
+
+                    if distance < valid_distance:
+                        hash_index = self.get_cell_hash(indexM)
+                        old = ti.atomic_add(self.ao_gridCount[hash_index], 1)
+                        self.ao_grid[hash_index, old] = i
+                        self.occupied_indexes.append(hash_index)
+
+
+
+    @ti.kernel
+    def find_ao_neighbour(self):
+        self.n_ao[None] = 0
+        for indexes in self.occupied_indexes:
+            k = 0
+            new_pair = 0
+            while k < self.ao_gridCount[indexes]:
+                v_id = self.ao_grid[indexes, k]
+                j = 0
+                while j < self.gridCount[indexes]:
+                    p_id = self.ao_grid[indexes, k]
+                    new_pair = ti.atomic_add(self.n_ao[None], 1)
+                    self.candidate_ao[new_pair] = ti.Vector([v_id, p_id])
+                    j += 1
+                k += 1
+
+        self.n_ao[None] -= 1
+
+    @ti.func
+    def clog(self, d, d0):
+        valLog = tm.log(d / d0)
+        valLogC = valLog * (d - d0)
+        relD = (d - d0) / d
+
+        D = - self.coef * (2 * valLogC + (d - d0) * relD)
+        E = - valLogC * (d - d0) * self.coef
+
+        return E, D
+
+    @ti.func
+    def clog_E(self, d, d0):
+        valLog = tm.log(d / d0)
+        valLogC = valLog * (d - d0)
+
+        E = - valLogC * (d - d0) * self.coef
+
+        return E
+
+
+    @ti.kernel
+    def compute_gradAO(self):
+        for i in self.candidate_ao:
+            v_id = self.candidate_ao[i][0]
+            p_id = self.candidate_ao[i][1]
+
+            v0 = self.obstacle_v[v_id, 0]
+            v1 = self.obstacle_v[v_id, 1]
+            p = self.x[p_id]
+            radsq = self.width[p_id] ** 2
+
+            obsVec = v1 - v0
+            relpos0 = v0 - p
+            relpos1 = v1 - p
+
+            lensq = obsVec.dot(obsVec)
+            s = - relpos0.dot(obsVec) / lensq
+
+            if s < 0:
+                dsitsq0 = relpos0.dot(relpos0)
+                if dsitsq0 < radsq + self.searchR:
+                    E, D = self.clog(dsitsq0-radsq, self.searchR)
+                    self.prev_global_E[None] += E
+                    self.gradient[p_id] -= D * 2 * relpos0
+            elif s > 1:
+                dsitsq1 = relpos1.dot(relpos1)
+                if dsitsq1 < radsq + self.searchR:
+                    E, D = self.clog(dsitsq1-radsq, self.searchR)
+                    self.prev_global_E[None] += E
+                    self.gradient[p_id] -= D * 2 * relpos1
+            else:
+                v = ti.Vector([-obsVec.y, obsVec.x]) / tm.sqrt(lensq)
+                dist = relpos0.dot(v)
+                distsq = dist ** 2
+                if distsq < radsq + self.searchR:
+                    E, D = self.clog(distsq - radsq, self.searchR)
+                    self.prev_global_E[None] += E
+                    self.gradient[p_id] -= D * 2 * dist
+
+
     def setup_hessian_builder(self):
-        # self.partial_hessian = ti.Matrix.field(self.dim, self.dim, dtype=ti.f32)
+        # self.partial_hessian = ti.Matrix.field(self.dim, self.dim, dtype=self.accuracy)
         # self.craft_hessian = ti.root.dense(ti.ij, (self.n_crafts[None], self.n_crafts[None])).place(self.partial_hessian)
         if self.optimizer == 'L-BFGS':
-            # self.Global_Hessian = ti.ndarray(ti.f32,
+            # self.Global_Hessian = ti.ndarray(self.accuracy,
             #                                  shape=(self.dim * self.n_crafts[None], self.dim * self.n_crafts[None]))
-            # self.Global_Identity = ti.ndarray(ti.f32,
+            # self.Global_Identity = ti.ndarray(self.accuracy,
             #                                  shape=(self.dim * self.n_crafts[None], self.dim * self.n_crafts[None]))
             # self.Global_Identity.fill(0)
             # self.init_Identity()
 
-            # self.Global_Grad = ti.ndarray(ti.f32, shape=(self.m_iters, self.dim * self.n_crafts[None]))
-            # self.Global_Value = ti.ndarray(ti.f32, shape=(self.m_iters, self.dim * self.n_crafts[None]))
-            self.rho_i   = ti.field(dtype=ti.f32)
-            self.alpha_i = ti.field(dtype=ti.f32)
-            self.y_i     = ti.field(dtype=ti.f32)
-            self.s_i     = ti.field(dtype=ti.f32)
+            # self.Global_Grad = ti.ndarray(self.accuracy, shape=(self.m_iters, self.dim * self.n_crafts[None]))
+            # self.Global_Value = ti.ndarray(self.accuracy, shape=(self.m_iters, self.dim * self.n_crafts[None]))
+            self.rho_i   = ti.field(dtype=self.accuracy)
+            self.alpha_i = ti.field(dtype=self.accuracy)
+            self.y_i     = ti.field(dtype=self.accuracy)
+            self.s_i     = ti.field(dtype=self.accuracy)
 
-            self.lbfgs_loop = ti.root.dense(ti.i, self.m_iters)
+            self.lbfgs_loop = ti.root.dense(ti.i, self.max_iters)
             self.lbfgs_loop.place(self.alpha_i)
             self.lbfgs_loop.place(self.rho_i)
 
@@ -177,16 +373,16 @@ class Solver:
 
         elif self.optimizer == 'Newton':
             self.Global_Hessian = ti.linalg.SparseMatrixBuilder(self.dim * self.n_crafts[None], self.dim * self.n_crafts[None], max_num_triplets=100000)
-            self.Global_Grad    = ti.ndarray(ti.f32, self.dim * self.n_crafts[None])
+            self.Global_Grad    = ti.ndarray(self.accuracy, self.dim * self.n_crafts[None])
 
         elif self.optimizer == 'BFGS':
             print('here')
-            self.Global_Hessian = ti.ndarray(ti.f32, shape=(self.dim * self.n_crafts[None], self.dim * self.n_crafts[None]))
+            self.Global_Hessian = ti.ndarray(self.accuracy, shape=(self.dim * self.n_crafts[None], self.dim * self.n_crafts[None]))
             # self.test_id()
             print('here0')
-            self.Global_Grad    = ti.ndarray(ti.f32, self.dim * self.n_crafts[None])
+            self.Global_Grad    = ti.ndarray(self.accuracy, self.dim * self.n_crafts[None])
             print('here1')
-            self.Global_Value   = ti.ndarray(ti.f32, self.dim * self.n_crafts[None])
+            self.Global_Value   = ti.ndarray(self.accuracy, self.dim * self.n_crafts[None])
 
         else:
             pass
@@ -230,17 +426,22 @@ class Solver:
 
 
 
-    def init_env(self, craft_type, craft_camp, x, length, width):
+    def init_env(self, craft_type, craft_camp, x, length, width, input_list):
 
         self.n_crafts[None] = 0
-        self.init_levelsets()
-
+        # self.init_levelsets()
         self.craft_type_np = craft_type
         self.craft_camp_np = craft_camp
         self.length_np     = length
         self.width_np      = width
         self.x_np          = x
 
+        self.add_crafts_kernel(self.craft_type_np, self.craft_camp_np, self.x_np, self.length_np, self.width_np)
+        self.setup_line_obstacles(input_list)
+        self.setup_ao_grid_gpu()
+        self.init_ao_grid()
+        self.init_obstacle_grid()
+        # Obstacles' occupied grids will not be changed
 
     def reset(self):
         self.n_crafts[None] = 0
@@ -271,9 +472,9 @@ class Solver:
             self.half_slide[i] = 0.5 * tm.sqrt(length[i]**2 + width[i]**2)
             self.angle[i]      = tm.asin(width[i]/self.half_slide[i])
             self.collided[i]   = 0
-            self.v[i]          = ti.Vector.zero(ti.f32, self.dim)
-            self.gradient[i]   = ti.Vector.zero(ti.f32, self.dim)
-            self.new_pos[i]    = ti.Vector.zero(ti.f32, self.dim)
+            self.v[i]          = ti.Vector.zero(self.accuracy, self.dim)
+            self.gradient[i]   = ti.Vector.zero(self.accuracy, self.dim)
+            self.new_pos[i]    = ti.Vector.zero(self.accuracy, self.dim)
 
             for j in ti.static(range(self.dim)):
                 self.x[i][j] = x[i, j]
@@ -288,7 +489,11 @@ class Solver:
             self.grid[i, j] = -1
             self.gridCount[i] = 0
 
-
+    @ti.kernel
+    def init_ao_grid(self):
+        for i, j in self.ao_grid:
+            self.ao_grid[i, j] = -1
+            self.ao_gridCount[i] = 0
     @ti.kernel
     def insert_grid_pos(self):
         for i in range(self.n_crafts[None]):
@@ -441,11 +646,13 @@ class Solver:
             a_id = self.candidate_neighbor[i][0]
             b_id = self.candidate_neighbor[i][1]
             ab = self.x[a_id] - self.x[b_id]
+            velr = self.v[a_id] - self.v[b_id]
             margin = - self.width[a_id] * self.width[a_id] * 4
+            d0 = self.searchR
             for j in ti.static(ti.ndrange(self.dim)):
                 margin += ab[j] ** 2
+                d0 += (velr[j] ** 2) * 5
             # margin = ab.squaredNorm()
-            d0 = (self.searchR - 2 * self.width[a_id]) ** 2
             if margin < d0:
                 valLog = tm.log(margin / d0)
                 valLogC = valLog * (margin - d0)
@@ -457,7 +664,7 @@ class Solver:
                 self.prev_global_E[None] -= valLogC * (margin - d0) * self.coef
 
             # print("grad_a:", self.gradient[a_id])
-        print('prev_E:', self.prev_global_E[None])
+        # print('prev_E:', self.prev_global_E[None])
 
                 # #Hessian Computation Part
                 # DD = -(4 * relD - relD * relD + 2 * valLog) * self.coef
@@ -466,43 +673,44 @@ class Solver:
                 # ab0 = ab[0]
                 # ab1 = ab[1]
                 # mat1 = 4 * DD * tm.mat2([ab0 * ab0, ab0 * ab1], [ab0 * ab1, ab1 * ab1])
-                # diag = D * 2 * ti.Matrix.identity(ti.f32, self.dim) + mat1.transpose()
+                # diag = D * 2 * ti.Matrix.identity(self.accuracy, self.dim) + mat1.transpose()
                 # self.diag[i] = diag
                 # # self.partial_hessian[a_id, a_id] += diag
                 # # self.partial_hessian[b_id, b_id] += diag
                 # # self.partial_hessian[a_id, b_id] -= diag
                 # # self.partial_hessian[b_id, a_id] -= diag.transpose()
 
-    @ti.kernel
-    def compute_gradAO(self):
-        for i in range(self.n_ao[None]):
-            o_id = self.candidate_ao[i][0]
-            a_id = self.candidate_ao[i][1]
-
-            ao =  - self.obstacle_pos[o_id] + self.x[a_id]
-
-            margin = (ao.length - self.width[a_id] - self.obstacle_r[o_id]) ** 2
-            d0 = self.searchR - self.width[a_id]
-            if margin < d0:
-                valLog = tm.log(margin / d0)
-                valLogC = valLog * (margin - d0)
-                relD = 1 - d0 / margin
-                D = - self.coef * (2 * valLogC + (margin - d0) * relD)
-
-                scale = self.width[a_id] / self.obstacle_r[o_id]
-
-                self.gradient[a_id] += D * 2 * ao * scale
-                self.prev_global_E[None] -= valLogC * (margin - d0) * self.coef
-
-                # # Hessian Computation Part
-                # DD = -(4 * relD - relD * relD + 2 * valLog) * self.coef
-                # # mat1 = 4 * DD * ab * ab
-                # # print(mat1)
-                # ao0 = ao[0] * scale
-                # ao1 = ao[1] * scale
-                # mat1 = 4 * DD * tm.mat2([ao0 * ao0, ao0 * ao1], [ao0 * ao1, ao1 * ao1])
-                # diag = D * 2 * ti.Matrix.identity(ti.f32, self.dim) + mat1.transpose()
-                # self.diag_ao[i] = diag
+    # @ti.kernel
+    # def compute_gradAO(self):
+    #     #WASTED
+    #     for i in range(self.n_ao[None]):
+    #         o_id = self.candidate_ao[i][0]
+    #         a_id = self.candidate_ao[i][1]
+    #
+    #         ao =  - self.obstacle_pos[o_id] + self.x[a_id]
+    #
+    #         margin = (ao.length - self.width[a_id] - self.obstacle_r[o_id]) ** 2
+    #         d0 = self.searchR - self.width[a_id]
+    #         if margin < d0:
+    #             valLog = tm.log(margin / d0)
+    #             valLogC = valLog * (margin - d0)
+    #             relD = 1 - d0 / margin
+    #             D = - self.coef * (2 * valLogC + (margin - d0) * relD)
+    #
+    #             scale = self.width[a_id] / self.obstacle_r[o_id]
+    #
+    #             self.gradient[a_id] += D * 2 * ao * scale
+    #             self.prev_global_E[None] -= valLogC * (margin - d0) * self.coef
+    #
+    #             # # Hessian Computation Part
+    #             # DD = -(4 * relD - relD * relD + 2 * valLog) * self.coef
+    #             # # mat1 = 4 * DD * ab * ab
+    #             # # print(mat1)
+    #             # ao0 = ao[0] * scale
+    #             # ao1 = ao[1] * scale
+    #             # mat1 = 4 * DD * tm.mat2([ao0 * ao0, ao0 * ao1], [ao0 * ao1, ao1 * ao1])
+    #             # diag = D * 2 * ti.Matrix.identity(self.accuracy, self.dim) + mat1.transpose()
+    #             # self.diag_ao[i] = diag
 
 
 
@@ -544,16 +752,58 @@ class Solver:
             b_id = self.candidate_neighbor[i][1]
             # ab = self.x[a_id] - self.x[b_id] + (-self.gradient[a_id] + self.gradient[b_id]) * self.alpha[None]
             ab = self.x[a_id] - self.x[b_id] + (self.new_v[a_id] - self.new_v[b_id]) * self.alpha[None]
-            margin = - self.width[a_id] * self.width[a_id] * 4
+            velr = self.v[a_id] - self.v[b_id]
+            margin = - self.width[a_id] * self.width[a_id] * 4.0
+            d0 = self.searchR
             for j in ti.static(ti.ndrange(self.dim)):
                 margin += ab[j] ** 2
+                d0 += (velr[j] ** 2) * 5.0
 
-            d0 = self.searchR - 2 * self.width[a_id]
             if margin < d0:
                 valLog = tm.log(margin / d0)
                 valLogC = valLog * (margin - d0)
 
                 self.global_E[None] -= valLogC * (margin - d0) * self.coef
+
+    @ti.kernel
+    def compute_energy_U_ao(self):
+        for i in self.candidate_ao:
+            v_id = self.candidate_ao[i][0]
+            p_id = self.candidate_ao[i][1]
+
+            v0 = self.obstacle_v[v_id, 0]
+            v1 = self.obstacle_v[v_id, 1]
+            p = self.x[p_id] + self.new_v[p_id] * self.alpha[None]
+            radsq = self.width[p_id] ** 2
+
+            obsVec = v1 - v0
+            relpos0 = v0 - p
+            relpos1 = v1 - p
+
+            lensq = obsVec.dot(obsVec)
+            s = - relpos0.dot(obsVec) / lensq
+
+            if s < 0:
+                dsitsq0 = relpos0.dot(relpos0)
+                if dsitsq0 < radsq + self.searchR:
+                    E = self.clog_E(dsitsq0-radsq, self.searchR)
+                    self.global_E[None] += E
+
+            elif s > 1:
+                dsitsq1 = relpos1.dot(relpos1)
+                if dsitsq1 < radsq + self.searchR:
+                    E = self.clog_E(dsitsq1-radsq, self.searchR)
+                    self.global_E[None] += E
+
+            else:
+                v = ti.Vector([-obsVec.y, obsVec.x]) / tm.sqrt(lensq)
+                dist = relpos0.dot(v)
+                distsq = dist ** 2
+                if distsq < radsq + self.searchR:
+                    E = self.clog_E(distsq - radsq, self.searchR)
+                    self.global_E[None] += E
+
+
 
 
 
@@ -582,8 +832,9 @@ class Solver:
             self.global_E[None] = 0.0
             self.compute_energy_E()
             self.compute_energy_U()
+            self.compute_energy_U_ao()
 
-            print('new_E:', self.global_E[None])
+            # print('new_E:', self.global_E[None])
 
             if self.global_E[None] < self.prev_global_E[None]:
                 break
@@ -600,7 +851,13 @@ class Solver:
     #         self.x[i] += self.v[i] * self.dt
 
     @ti.kernel
-    def update_pos(self, new_alpha: ti.f32):
+    def update_pos_32(self, new_alpha: ti.f32):
+        for i in range(self.n_crafts[None]):
+            # self.x[i] -= self.gradient[i] * new_alpha
+            self.x[i] += self.new_v[i] * new_alpha
+
+    @ti.kernel
+    def update_pos_64(self, new_alpha: ti.f64):
         for i in range(self.n_crafts[None]):
             # self.x[i] -= self.gradient[i] * new_alpha
             self.x[i] += self.new_v[i] * new_alpha
@@ -632,7 +889,7 @@ class Solver:
             self.new_v[i] = -self.gradient[i]
 
     @ti.kernel
-    def assemble_Value(self, x_mat: ti.types.ndarray(), single_x: ti.template()):
+    def assemble_Value(self, x_mat: ti.types.ndarray(), single_x: ti.types.vector(2, dtype=ti.f32)):
         for i in range(self.n_crafts[None]):
             for m in ti.static(range(2)):
                 x_mat[2 * i + m] = single_x[i][m]
@@ -648,7 +905,7 @@ class Solver:
         s_k = self.Global_Value - x_old
 
         rho_k = 1 / (y_k @ s_k)
-        prev_mat_1 = ti.Matrix.identity(ti.f32, self.dim * self.n_crafts[None]) - rho_k * s_k.outer_product(y_k)
+        prev_mat_1 = ti.Matrix.identity(self.accuracy, self.dim * self.n_crafts[None]) - rho_k * s_k.outer_product(y_k)
         GH = self.Global_Hessian
         GH = prev_mat_1 @ GH @ prev_mat_1 + rho_k * s_k.outer_product(s_k)
 
@@ -685,7 +942,12 @@ class Solver:
         self.tmp_value[None] /= self.rho_i[iters]
 
     @ti.kernel
-    def vector_dot(self, iters: ti.i32, vec1: ti.template(), vec2: ti.template()):
+    def vector_dot_32(self, iters: ti.i32, vec1: ti.types.vector(2, dtype=ti.f32), vec2: ti.types.vector(2, dtype=ti.f32)):
+        for i in range(self.dim * self.n_crafts[None]):
+            self.tmp_value[None] += vec1[iters, i] * vec2[iters, i]
+
+    @ti.kernel
+    def vector_dot_64(self, iters: ti.i32, vec1: ti.types.vector(2, dtype=ti.f64), vec2: ti.types.vector(2, dtype=ti.f64)):
         for i in range(self.dim * self.n_crafts[None]):
             self.tmp_value[None] += vec1[iters, i] * vec2[iters, i]
 
@@ -696,8 +958,8 @@ class Solver:
             for j in ti.static(range(2)):
                 self.alpha_i[iters] += self.gradient[i][j] * self.s_i[iters, 2*i+j]
         self.alpha_i[iters] /= self.rho_i[iters]
-        print(self.rho_i[iters])
-        print("alpha:", self.alpha_i[iters])
+        # print(self.rho_i[iters])
+        # print("alpha:", self.alpha_i[iters])
 
     @ti.kernel
     def apply_first_loop_2(self, iters: ti.i32):
@@ -706,7 +968,13 @@ class Solver:
                 self.gradient[i][j] -= self.alpha_i[iters] * self.y_i[iters, 2*i+j]
 
     @ti.kernel
-    def get_r(self, scale: ti.f32):
+    def get_r_32(self, scale: ti.f32):
+        #TODO: What if initialized inv-H is not gamma*I
+        for i in range(self.n_crafts[None]):
+            self.gradient[i] *= scale
+
+    @ti.kernel
+    def get_r_64(self, scale: ti.f64):
         #TODO: What if initialized inv-H is not gamma*I
         for i in range(self.n_crafts[None]):
             self.gradient[i] *= scale
@@ -773,7 +1041,10 @@ class Solver:
                 self.apply_first_loop_1(iter1)
                 self.apply_first_loop_2(iter1)
 
-            self.get_r(scale)
+            if ti.static(self.accuracy == 'f32'):
+                self.get_r_32(scale)
+            else:
+                self.get_r_64(scale)
 
             for iter2 in range(iters - m_iters, iters):
                 self.apply_second_loop_1(iter2)
@@ -789,7 +1060,7 @@ class Solver:
 
 
     @ti.kernel
-    def Rasterize_Vector(self, new_direction: ti.types.ndarray(), new_v: ti.template()):
+    def Rasterize_Vector(self, new_direction: ti.types.ndarray(), new_v: ti.types.vector(2, dtype=ti.f32)):
         for i in range(self.n_crafts[None]):
             for m in ti.static(range(2)):
                 new_v[i][m] = new_direction[2 * i + m]
@@ -806,6 +1077,9 @@ class Solver:
 
         self.init_grad()
         self.compute_gradAA()
+
+        self.find_ao_neighbour()
+        self.compute_gradAO()
 
         # self.sparse_solving()
         if step_optimizer == 'L-BFGS':
@@ -830,13 +1104,13 @@ class Solver:
             self.single_step('L-BFGS', iter)
             iter += 1
             if self.alpha[None] < self.global_alpha_min:
-                print(iter)
-                print(self.alpha[None])
+                print("finished:", iter)
+                # print(self.alpha[None])
                 # craft_info = self.render_info()
-                # break
+                break
 
         craft_info = self.render_info()
-        # print(iter)
+        print("finished:", iter)
 
         return craft_info
 
@@ -850,7 +1124,7 @@ class Solver:
         else:
             y_k, s_k = self.init_inv_H()
             rho_k = 1 / (y_k @ s_k)
-            prev_mat_1 = ti.Matrix.identity(ti.f32, self.dim * self.n_crafts[None]) - rho_k * s_k.outer_product(y_k)
+            prev_mat_1 = ti.Matrix.identity(self.accuracy, self.dim * self.n_crafts[None]) - rho_k * s_k.outer_product(y_k)
             GH = self.Global_Hessian
             GH = prev_mat_1 @ GH @ prev_mat_1 + rho_k * s_k.outer_product(s_k)
 
@@ -874,12 +1148,12 @@ class Solver:
             if self.alpha[None] > self.global_alpha_min:
                 self.update_pos(self.alpha[None])
             else:
-                print(iter)
+                print("finished:", iter)
                 # craft_info = self.render_info()
                 break
 
         craft_info = self.render_info()
-        print(iter)
+        print("finished:", iter)
 
         return craft_info
 
@@ -897,7 +1171,7 @@ class Solver:
         # return value
 
     # @ti.kernel
-    # def help_init_inv_H(self, scale: ti.f32):
+    # def help_init_inv_H(self, scale: self.accuracy):
     #     for i in range(self.dim * self.n_crafts[None]):
     #         self.Global_Hessian[i, i] = scale
 
@@ -907,7 +1181,7 @@ class Solver:
     #     help1 = y_k @ s_k
     #     help2 = ti.math
     #     print(help1)
-    #     self.Global_Hessian = ti.Matrix.identity(ti.f32, self.dim * self.n_crafts[None]) * (y_k @ s_k) / (y_k @ y_k)
+    #     self.Global_Hessian = ti.Matrix.identity(self.accuracy, self.dim * self.n_crafts[None]) * (y_k @ s_k) / (y_k @ y_k)
 
 
     # @ti.kernel
@@ -929,12 +1203,12 @@ class Solver:
 
         # y_k = self.Global_Grad - grad_old
         # s_k = self.Global_Value - x_old
-        y_k = ti.ndarray(ti.f32, self.dim * self.n_crafts[None])
-        s_k = ti.ndarray(ti.f32, self.dim * self.n_crafts[None])
+        y_k = ti.ndarray(self.accuracy, self.dim * self.n_crafts[None])
+        s_k = ti.ndarray(self.accuracy, self.dim * self.n_crafts[None])
         self.return_minus(y_k, self.Global_Grad, grad_old)
         self.return_minus(s_k, self.Global_Value, x_old)
-        self.v1 = ti.field(ti.f32, shape=())
-        # self.v2 = ti.field(ti.f32, shape=())
+        self.v1 = ti.field(self.accuracy, shape=())
+        # self.v2 = ti.field(self.accuracy, shape=())
         self.v1[None] = 0.0
         # self.v2[None] = 0.0
         self.vector_array_dot(y_k, s_k)
@@ -942,71 +1216,102 @@ class Solver:
         self.v1[None] = 0.0
         self.vector_array_dot(y_k, y_k)
         v2 = self.v1[None]
-        print(y_k)
-        print(v2)
+        # print(y_k)
+        # print(v2)
 
 
         # scale = self.vector_array_dot(y_k, s_k) / self.vector_array_dot(y_k, y_k)
         self.Global_Hessian.fill(0)
         self.help_init_inv_H(v1/v2)
         #
-        # self.Global_Hessian = ti.Matrix.identity(ti.f32, self.dim * self.n_crafts[None]) * (y_k @ s_k) / (y_k @ y_k)
+        # self.Global_Hessian = ti.Matrix.identity(self.accuracy, self.dim * self.n_crafts[None]) * (y_k @ s_k) / (y_k @ y_k)
         # self.help1(y_k, s_k)
         return y_k, s_k
 
-
-
     @ti.kernel
-    def get_render_info(self, type:ti.types.ndarray(), camp:ti.types.ndarray(), x:ti.types.ndarray(), v:ti.types.ndarray(), renderx:ti.types.ndarray(), rendery:ti.types.ndarray(), collided:ti.types.ndarray()):
+    def get_render_info(self, type: ti.types.ndarray(), camp: ti.types.ndarray(), x: ti.types.ndarray(),
+                        v: ti.types.ndarray()):
         for i in range(self.n_crafts[None]):
-            normal_angle = tm.atan2(self.v[i][1], self.v[i][0])
-            rot_mat = tm.rotation2d(normal_angle)
-
-            x0 = self.x[i] + ti.Vector([self.length[i]/2, self.width[i]/2]) @ rot_mat
-            x1 = self.x[i] + ti.Vector([-self.length[i]/2, self.width[i]/2]) @ rot_mat
-            x2 = self.x[i] + ti.Vector([-self.length[i]/2, -self.width[i]/2]) @ rot_mat
-            x3 = self.x[i] + ti.Vector([self.length[i]/2, -self.width[i]/2]) @ rot_mat
-
             type[i] = self.craft_type[i]
             camp[i] = self.craft_camp[i]
-            collided[i] = self.collided[i]
 
             for j in ti.static(range(self.dim)):
                 x[i, j] = self.x[i][j]
                 v[i, j] = self.v[i][j]
-                renderx[i * 4, j] = x0[j]
-                renderx[i * 4 + 1, j] = x1[j]
-                renderx[i * 4 + 2, j] = x2[j]
-                renderx[i * 4 + 3, j] = x3[j]
 
-                rendery[i * 4, j] = x1[j]
-                rendery[i * 4 + 1, j] = x2[j]
-                rendery[i * 4 + 2, j] = x3[j]
-                rendery[i * 4 + 3, j] = x0[j]
 
     def render_info(self):
         np_x = np.ndarray((self.n_crafts[None], self.dim), dtype=np.float32)
         np_v = np.ndarray((self.n_crafts[None], self.dim), dtype=np.float32)
-        np_type = np.ndarray((self.n_crafts[None], ), dtype=np.float32)
-        np_camp = np.ndarray((self.n_crafts[None], ), dtype=np.float32)
-        np_collide = np.ndarray((self.n_crafts[None],), dtype=np.int32)
+        np_type = np.ndarray((self.n_crafts[None],), dtype=np.float32)
+        np_camp = np.ndarray((self.n_crafts[None],), dtype=np.float32)
 
-        #For rendering rectangles
-        np_renderx = np.ndarray((4 * self.n_crafts[None], self.dim), dtype=np.float32)
-        np_rendery = np.ndarray((4 * self.n_crafts[None], self.dim), dtype=np.float32)
-        self.get_render_info(np_type, np_camp, np_x, np_v, np_renderx, np_rendery, np_collide)
+        self.get_render_info(np_type, np_camp, np_x, np_v)
 
         craft_data = {
             'position': np_x,
             'velocity': np_v,
             'type': np_type,
-            'camp': np_camp,
-            'RenderX': np_renderx,
-            'RenderY': np_rendery,
-            'Collided': np_collide
+            'camp': np_camp
         }
 
         return craft_data
+
+
+
+    #TODO: Reuse this part when reimplementing vheicles
+
+    # @ti.kernel
+    # def get_render_info(self, type:ti.types.ndarray(), camp:ti.types.ndarray(), x:ti.types.ndarray(), v:ti.types.ndarray(), renderx:ti.types.ndarray(), rendery:ti.types.ndarray(), collided:ti.types.ndarray()):
+    #     for i in range(self.n_crafts[None]):
+    #         normal_angle = tm.atan2(self.v[i][1], self.v[i][0])
+    #         rot_mat = tm.rotation2d(normal_angle)
+    #
+    #         x0 = self.x[i] + ti.Vector([self.length[i]/2, self.width[i]/2]) @ rot_mat
+    #         x1 = self.x[i] + ti.Vector([-self.length[i]/2, self.width[i]/2]) @ rot_mat
+    #         x2 = self.x[i] + ti.Vector([-self.length[i]/2, -self.width[i]/2]) @ rot_mat
+    #         x3 = self.x[i] + ti.Vector([self.length[i]/2, -self.width[i]/2]) @ rot_mat
+    #
+    #         type[i] = self.craft_type[i]
+    #         camp[i] = self.craft_camp[i]
+    #         collided[i] = self.collided[i]
+    #
+    #         for j in ti.static(range(self.dim)):
+    #             x[i, j] = self.x[i][j]
+    #             v[i, j] = self.v[i][j]
+    #             renderx[i * 4, j] = x0[j]
+    #             renderx[i * 4 + 1, j] = x1[j]
+    #             renderx[i * 4 + 2, j] = x2[j]
+    #             renderx[i * 4 + 3, j] = x3[j]
+    #
+    #             rendery[i * 4, j] = x1[j]
+    #             rendery[i * 4 + 1, j] = x2[j]
+    #             rendery[i * 4 + 2, j] = x3[j]
+    #             rendery[i * 4 + 3, j] = x0[j]
+    #
+    # def render_info(self):
+    #     np_x = np.ndarray((self.n_crafts[None], self.dim), dtype=np.float32)
+    #     np_v = np.ndarray((self.n_crafts[None], self.dim), dtype=np.float32)
+    #     np_type = np.ndarray((self.n_crafts[None], ), dtype=np.float32)
+    #     np_camp = np.ndarray((self.n_crafts[None], ), dtype=np.float32)
+    #     np_collide = np.ndarray((self.n_crafts[None],), dtype=np.int32)
+    #
+    #     #For rendering rectangles
+    #     np_renderx = np.ndarray((4 * self.n_crafts[None], self.dim), dtype=np.float32)
+    #     np_rendery = np.ndarray((4 * self.n_crafts[None], self.dim), dtype=np.float32)
+    #     self.get_render_info(np_type, np_camp, np_x, np_v, np_renderx, np_rendery, np_collide)
+    #
+    #     craft_data = {
+    #         'position': np_x,
+    #         'velocity': np_v,
+    #         'type': np_type,
+    #         'camp': np_camp,
+    #         'RenderX': np_renderx,
+    #         'RenderY': np_rendery,
+    #         'Collided': np_collide
+    #     }
+    #
+    #     return craft_data
 
     @ti.kernel
     def copy_dynamic_nd(self, np_x: ti.types.ndarray(), input_x: ti.template()):
