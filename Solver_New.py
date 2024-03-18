@@ -27,7 +27,7 @@ class Solver:
         self.max_num = max_num
         self.discrete = discrete
         self.maxInGrid = 2048
-        self.max_iters = 10
+        self.max_iters = 1
 
         self.substeps = substeps
         self.ep_length = ep_length
@@ -38,7 +38,7 @@ class Solver:
         self.invGridR = 1 / GridR
         self.searchR = d0
         self.neighbor_grids = int(d0/GridR + 0.5)
-        self.coef = 0.005
+        self.coef = 0.5
 
         self.accuracy = ti.f32
         if accuracy == 'f64':
@@ -69,7 +69,7 @@ class Solver:
         # self.prev_global_E = 0.0
         self.alpha = ti.field(self.accuracy, shape=())
         self.alpha_dec = 0.6
-        self.global_alpha_min = 0.001
+        self.global_alpha_min = 0.00001
 
         self.global_E = ti.field(self.accuracy, shape=())
         self.prev_global_E = ti.field(self.accuracy, shape=())
@@ -233,6 +233,7 @@ class Solver:
         #if the distance is smaller than searchR + 0.5 * hashgrids' length. Then the hash grid is occupied
         #by the obstacle
         valid_distance = self.searchR + 0.7 * self.GridR
+        print('valid_dis', valid_distance)
         for i in range(self.n_obstacles[None]):
             #i is the index of the lines
             v0 = self.obstacle_v[i, 0]
@@ -243,8 +244,16 @@ class Solver:
             v0x, v0y = indexV0[0], indexV0[1]
             v1x, v1y = indexV1[0], indexV1[1]
 
-            for m in range(v0x, v1x + 1):
-                for n in range(v0y, v1y + 1):
+            x_min = ti.min(v0x, v1x)
+            y_min = ti.min(v0y, v1y)
+
+            x_max = ti.max(v0x, v1x)
+            y_max = ti.max(v0y, v1y)
+
+            print("iiiii", i, indexV0, indexV1)
+
+            for m in range(x_min - 1, x_max + 2):
+                for n in range(y_min - 1, y_max + 2):
                     vmx = (ti.cast(m, self.accuracy) + 0.5) * self.GridR
                     vmy = (ti.cast(n, self.accuracy) + 0.5) * self.GridR
 
@@ -252,32 +261,42 @@ class Solver:
 
                     middle_point = ti.Vector([vmx, vmy])
                     distance = self.return_distance(v0, v1, middle_point)
+                    print('ith_dis', i, distance)
 
                     if distance < valid_distance:
                         hash_index = self.get_cell_hash(indexM)
                         old = ti.atomic_add(self.ao_gridCount[hash_index], 1)
+                        # print('count', i, self.ao_gridCount[hash_index])
                         self.ao_grid[hash_index, old] = i
+                        print('ith indices', i)
                         self.occupied_indexes.append(hash_index)
+                        print(hash_index)
 
 
 
     @ti.kernel
     def find_ao_neighbour(self):
         self.n_ao[None] = 0
-        for indexes in self.occupied_indexes:
+        for i in self.occupied_indexes:
             k = 0
             new_pair = 0
+            indexes = self.occupied_indexes[i]
+            # print('index:', indexes)
             while k < self.ao_gridCount[indexes]:
+                # print('k:', k)
                 v_id = self.ao_grid[indexes, k]
                 j = 0
                 while j < self.gridCount[indexes]:
-                    p_id = self.ao_grid[indexes, k]
-                    new_pair = ti.atomic_add(self.n_ao[None], 1)
-                    self.candidate_ao[new_pair] = ti.Vector([v_id, p_id])
+                    p_id = self.grid[indexes, j]
+                    if p_id > -1:
+                        print("ith_indice", i)
+                        new_pair = ti.atomic_add(self.n_ao[None], 1)
+                        self.candidate_ao[new_pair] = ti.Vector([v_id, p_id])
                     j += 1
                 k += 1
 
-        self.n_ao[None] -= 1
+        # self.n_ao[None] -= 1
+        print("AOs:", self.n_ao[None])
 
     @ti.func
     def clog(self, d, d0):
@@ -302,9 +321,11 @@ class Solver:
 
     @ti.kernel
     def compute_gradAO(self):
-        for i in self.candidate_ao:
+        for i in range(self.n_ao[None]):
             v_id = self.candidate_ao[i][0]
             p_id = self.candidate_ao[i][1]
+            print('vid:', v_id)
+            print('pid:', p_id)
 
             v0 = self.obstacle_v[v_id, 0]
             v1 = self.obstacle_v[v_id, 1]
@@ -323,21 +344,25 @@ class Solver:
                 if dsitsq0 < radsq + self.searchR:
                     E, D = self.clog(dsitsq0-radsq, self.searchR)
                     self.prev_global_E[None] += E
-                    self.gradient[p_id] -= D * 2 * relpos0
+                    self.gradient[p_id] -= D * 2 * relpos0 * 10
             elif s > 1:
                 dsitsq1 = relpos1.dot(relpos1)
                 if dsitsq1 < radsq + self.searchR:
                     E, D = self.clog(dsitsq1-radsq, self.searchR)
                     self.prev_global_E[None] += E
-                    self.gradient[p_id] -= D * 2 * relpos1
+                    self.gradient[p_id] -= D * 2 * relpos1 * 10
             else:
                 v = ti.Vector([-obsVec.y, obsVec.x]) / tm.sqrt(lensq)
                 dist = relpos0.dot(v)
+                print('dist:', dist)
                 distsq = dist ** 2
                 if distsq < radsq + self.searchR:
                     E, D = self.clog(distsq - radsq, self.searchR)
+                    print("D:", D)
                     self.prev_global_E[None] += E
-                    self.gradient[p_id] -= D * 2 * dist
+                    self.gradient[p_id] -= D * 2 * v * 10
+
+                    print(self.gradient[p_id])
 
 
     def setup_hessian_builder(self):
@@ -400,29 +425,29 @@ class Solver:
         for i in range(self.dim * self.n_crafts[None]):
             self.Global_Identity[i, i] = 1.0
 
-    @ti.kernel
-    def init_occupied_grids(self):
-        #Find obstacles occupied grids; circle obstacles
-        self.occupied_num[None] = 0
-        self.occupied_index.deactive()
-        for i in range(self.n_obstacles[None]):
-            sqrt_r = tm.sqrt(self.obstacle_r[i])
-            index_x = self.obstacle_pos[0]
-            index_y = self.obstacle_pos[1]
-
-            index_l = ti.cast((index_x - sqrt_r) * self.invGridR, ti.i32) - 1
-            index_r = ti.cast((index_x + sqrt_r) * self.invGridR, ti.i32) + 1
-            index_d = ti.cast((index_y - sqrt_r) * self.invGridR, ti.i32) - 1
-            index_u = ti.cast((index_y + sqrt_r) * self.invGridR, ti.i32) + 1
-
-            for m in range(index_l, index_r + 1):
-                for n in ti.static(range(index_d, index_u + 1)):
-                    indexO = ti.Vector([m, n])
-                    hash_index = self.get_cell_hash(indexO)
-                    old = ti.atomic_add(self.ao_gridCount[hash_index], 1)
-                    self.ao_grid[hash_index, old] = i
-                    self.occupied_num[None] += 1
-                    self.occupied_index.append(hash_index)
+    # @ti.kernel
+    # def init_occupied_grids(self):
+    #     #Find obstacles occupied grids; circle obstacles
+    #     self.occupied_num[None] = 0
+    #     self.occupied_index.deactive()
+    #     for i in range(self.n_obstacles[None]):
+    #         sqrt_r = tm.sqrt(self.obstacle_r[i])
+    #         index_x = self.obstacle_pos[0]
+    #         index_y = self.obstacle_pos[1]
+    #
+    #         index_l = ti.cast((index_x - sqrt_r) * self.invGridR, ti.i32) - 1
+    #         index_r = ti.cast((index_x + sqrt_r) * self.invGridR, ti.i32) + 1
+    #         index_d = ti.cast((index_y - sqrt_r) * self.invGridR, ti.i32) - 1
+    #         index_u = ti.cast((index_y + sqrt_r) * self.invGridR, ti.i32) + 1
+    #
+    #         for m in range(index_l, index_r + 1):
+    #             for n in ti.static(range(index_d, index_u + 1)):
+    #                 indexO = ti.Vector([m, n])
+    #                 hash_index = self.get_cell_hash(indexO)
+    #                 old = ti.atomic_add(self.ao_gridCount[hash_index], 1)
+    #                 self.ao_grid[hash_index, old] = i
+    #                 self.occupied_num[None] += 1
+    #                 self.occupied_index.append(hash_index)
 
 
 
@@ -531,24 +556,24 @@ class Solver:
                         # print("Nei", int(i), int(j))
                     k += 1
 
-        self.n_neigbors[None] -= 1
+        # self.n_neigbors[None] -= 1
 
 
-    @ti.kernel
-    def find_ao_pair(self):
-        # find Agent-Obstacle pairs
-        self.n_ao[None] = 0
-        for hash_index in self.occupied_index:
-            for m in ti.static(range(self.ao_gridCount[hash_index])):
-                #Obstacle index m
-                k = 0
-                while k < self.gridCount[hash_index]:
-                    j = self.grid[hash_index, k]
-                    new_pair = ti.atomic_add(self.n_ao[None], 1)
-                    self.candidate_ao[new_pair] = ti.Vector([m, j])
-                k += 1
-
-        self.n_ao[None] -= 1
+    # @ti.kernel
+    # def find_ao_pair(self):
+    #     # find Agent-Obstacle pairs
+    #     self.n_ao[None] = 0
+    #     for hash_index in self.occupied_index:
+    #         for m in ti.static(range(self.ao_gridCount[hash_index])):
+    #             #Obstacle index m
+    #             k = 0
+    #             while k < self.gridCount[hash_index]:
+    #                 j = self.grid[hash_index, k]
+    #                 new_pair = ti.atomic_add(self.n_ao[None], 1)
+    #                 self.candidate_ao[new_pair] = ti.Vector([m, j])
+    #             k += 1
+    #
+    #     # self.n_ao[None] -= 1
 
 
     #               self.insert_neighbor(i, indexV + offset)
@@ -648,7 +673,7 @@ class Solver:
             ab = self.x[a_id] - self.x[b_id]
             velr = self.v[a_id] - self.v[b_id]
             margin = - self.width[a_id] * self.width[a_id] * 4
-            d0 = self.searchR
+            d0 = self.searchR * 0.1
             for j in ti.static(ti.ndrange(self.dim)):
                 margin += ab[j] ** 2
                 d0 += (velr[j] ** 2) * 5
@@ -827,14 +852,15 @@ class Solver:
     def line_search(self):
         # for i in range(self.n_neigbors[None]):
         self.alpha[None] = 1.0
+        print("PREV-E", self.prev_global_E[None])
 
         while self.alpha[None] > self.global_alpha_min:
             self.global_E[None] = 0.0
             self.compute_energy_E()
-            self.compute_energy_U()
-            self.compute_energy_U_ao()
+            # self.compute_energy_U()
+            # self.compute_energy_U_ao()
 
-            # print('new_E:', self.global_E[None])
+            print('new_E:', self.global_E[None])
 
             if self.global_E[None] < self.prev_global_E[None]:
                 break
@@ -917,6 +943,7 @@ class Solver:
     def get_x_s(self, iters: ti.i32):
         for i in range(self.n_crafts[None]):
             scale_value = self.new_v[i] * self.alpha[None]
+            # ti.static_print(scale_value[0])
             self.x[i] += scale_value
             for j in ti.static(range(2)):
                 self.s_i[iters, 2 * i + j] = scale_value[j]
@@ -1092,6 +1119,10 @@ class Solver:
             self.direct_solving()  #Gradient Descent
 
         self.line_search()
+
+        #Deactivate dynamic snodes
+        # self.candidate_ao.deactivate()
+        # self.candidate_neighbor.deactivate()
         # self.update_pos(self.alpha[None])
 
 
