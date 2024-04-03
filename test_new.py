@@ -19,8 +19,8 @@ x_coord = np.linspace(200, 650, 30)
 grid_x, grid_y = np.meshgrid(x_coord, x_coord)
 x = np.column_stack((grid_x.ravel(), grid_y.ravel()))
 
-x = np.random.uniform(low=200, high=650, size=(900, 2))
-combined_actions = np.random.uniform(low=-0.5, high=0.5, size=(900, 2)) * 3
+# x = np.random.uniform(low=200, high=650, size=(900, 2))
+combined_actions = np.random.uniform(low=-0.5, high=0.5, size=(900, 2))
 # combined_actions = np.ones((900,900)) * 2.0
 # combined_actions = np.array([[0, 1]] * 500) * 0.1
 craft_type = np.ones(900)

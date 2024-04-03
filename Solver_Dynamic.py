@@ -38,7 +38,7 @@ class Solver:
         self.invGridR = 1 / GridR
         self.searchR = d0
         self.neighbor_grids = int(d0/GridR + 0.5)
-        self.coef = 0.5
+        self.coef = 100000.0
 
         self.accuracy = ti.f32
         if accuracy == 'f64':
@@ -72,7 +72,7 @@ class Solver:
         self.intersection_check_result[None] = 0
         self.alpha = ti.field(self.accuracy, shape=())
         self.alpha_dec = 0.6
-        self.global_alpha_min = 0.00001
+        self.global_alpha_min = 1e-8
 
         self.global_E = ti.field(self.accuracy, shape=())
         self.prev_global_E = ti.field(self.accuracy, shape=())
@@ -110,6 +110,10 @@ class Solver:
         self.crafts.place(self.craft_type, self.craft_camp, self.x, self.new_pos, self.v, self.gradient, self.new_v, self.length, self.width, self.half_slide, self.angle, self.collided)
         self.obstacles.place(self.obstacle_pos, self.obstacle_r)
 
+        S = ti.root.dynamic(ti.i, 1024, chunk_size=None)
+        self.active_agents = ti.field(int)
+        S.place(self.active_agents)
+
         # self.craft_hessian = ti.root.dense
 
 
@@ -123,7 +127,7 @@ class Solver:
         self.min_boundary    = ti.Vector.field(self.dim, dtype=self.accuracy, shape=(1))
         self.max_boundary    = ti.Vector.field(self.dim, dtype=self.accuracy, shape=(1))
 
-        self.maxNeighbourPair= self.n_crafts[None] * 1024
+        self.maxNeighbourPair= 256 * 1024
 
         # self.candidate_neighbor   = ti.types.ndarray(dtype=ti.math.vec2, dim=self.maxNeighbourPair)
         self.candidate_neighbor   = ti.Vector.field(self.dim, dtype=ti.i32)
@@ -139,7 +143,7 @@ class Solver:
         self.ao_gridCount = ti.field(dtype=ti.i32)
         self.ao_grid = ti.field(dtype=ti.i32)
 
-        self.maxAOPair = self.n_crafts[None] * self.n_obstacles[None]
+        self.maxAOPair = 256 * self.n_obstacles[None]
 
         self.candidate_ao = ti.Vector.field(self.dim, dtype=ti.i32)
         self.diag_ao = ti.Matrix.field(self.dim, self.dim, dtype=self.accuracy)
@@ -333,13 +337,13 @@ class Solver:
                 if dsitsq0 < radsq + self.searchR:
                     E, D = self.clog(dsitsq0-radsq, self.searchR)
                     self.prev_global_E[None] += E
-                    self.gradient[p_id] -= D * 2 * relpos0 * 10
+                    self.gradient[p_id] -= D * 2 * relpos0
             elif s > 1:
                 dsitsq1 = relpos1.dot(relpos1)
                 if dsitsq1 < radsq + self.searchR:
                     E, D = self.clog(dsitsq1-radsq, self.searchR)
                     self.prev_global_E[None] += E
-                    self.gradient[p_id] -= D * 2 * relpos1 * 10
+                    self.gradient[p_id] -= D * 2 * relpos1
             else:
                 v = ti.Vector([-obsVec.y, obsVec.x]) / tm.sqrt(lensq)
                 dist = relpos0.dot(v)
@@ -349,29 +353,37 @@ class Solver:
                     E, D = self.clog(distsq - radsq, self.searchR)
                     # print("D:", D)
                     self.prev_global_E[None] += E
-                    self.gradient[p_id] -= D * 2 * v * 10
+                    self.gradient[p_id] -= D * 2 * v
 
                     # print(self.gradient[p_id])
+
+    @ti.kernel
+    def deactivate_helper(self):
+        for i in range(self.max_iters):
+            self.s_i[i].deactivate()
+            self.y_i[i].deactivate()
 
 
     def setup_hessian_builder(self):
         if self.optimizer == 'L-BFGS':
             self.rho_i   = ti.field(dtype=self.accuracy)
             self.alpha_i = ti.field(dtype=self.accuracy)
-            self.y_i     = ti.field(dtype=self.accuracy)
-            self.s_i     = ti.field(dtype=self.accuracy)
+            self.y_i     = ti.Vector.field(self.dim, dtype=self.accuracy)
+            self.s_i     = ti.Vector.field(self.dim, dtype=self.accuracy)
 
             self.lbfgs_loop = ti.root.dense(ti.i, self.max_iters)
             self.lbfgs_loop.place(self.alpha_i)
             self.lbfgs_loop.place(self.rho_i)
 
-            self.lbfgs_loop.dense(ti.j, self.dim * self.n_crafts[None]).place(self.s_i)
-            self.lbfgs_loop.dense(ti.j, self.dim * self.n_crafts[None]).place(self.y_i)
+            self.lbfgs_loop.dynamic(ti.j, 1024).place(self.s_i)
+            self.lbfgs_loop.dynamic(ti.j, 1024).place(self.y_i)
 
             self.alpha_i.fill(0)
             self.rho_i.fill(0)
-            self.s_i.fill(0)
-            self.y_i.fill(0)
+
+            self.deactivate_helper()
+            # self.s_i.fill(0)
+            # self.y_i.fill(0)
 
 
         elif self.optimizer == 'Newton':
@@ -391,11 +403,20 @@ class Solver:
             pass
 
     @ti.kernel
-    def clear_y_s_rho(self):
+    def clear_y_s_rho_1(self):
         self.alpha_i.fill(0)
         self.rho_i.fill(0)
-        self.s_i.fill(0)
-        self.y_i.fill(0)
+
+    @ti.kernel
+    def clear_y_s_rho_2(self):
+        for i in range(self.max_iters):
+            self.s_i[i].deactivate()
+            self.y_i[i].deactivate()
+
+    def clear_y_s_rho(self):
+        self.clear_y_s_rho_1()
+        self.clear_y_s_rho_2()
+
 
 
     @ti.kernel
@@ -460,18 +481,85 @@ class Solver:
         self.n_crafts[None] += new_crafts
 
     @ti.kernel
+    def add_crafts_v_kernel(self,
+                           craft_type: ti.types.ndarray(),
+                           craft_camp: ti.types.ndarray(),
+                           x         : ti.types.ndarray(),
+                           v         : ti.types.ndarray(),
+                           length    : ti.types.ndarray(),
+                           width     : ti.types.ndarray()):
+
+        new_crafts = craft_type.shape[0]
+
+        for i in range(self.n_crafts[None], self.n_crafts[None] + new_crafts):
+            np_id = i - self.n_crafts[None]
+            self.craft_type[i] = craft_type[np_id]
+            self.craft_camp[i] = craft_camp[np_id]
+            self.length[i]     = length[np_id]
+            self.width[i]      = width[np_id]
+            self.half_slide[i] = 0.0
+            self.angle[i]      = 0.0
+            self.collided[i]   = 0
+            # self.v[i]          = ti.Vector.zero(self.accuracy, self.dim)
+            self.gradient[i]   = ti.Vector.zero(self.accuracy, self.dim)
+            self.new_pos[i]    = ti.Vector.zero(self.accuracy, self.dim)
+
+            for j in ti.static(range(self.dim)):
+                self.x[i][j] = x[np_id, j]
+                self.v[i][j] = v[np_id, j]
+
+            self.active_agents.append(i)
+
+        self.n_crafts[None] += new_crafts
+
+    def add_crafts_dynamic(self, craft_type, craft_camp, x, v, length, width):
+        self.add_crafts_v_kernel(craft_type, craft_camp, x, v, length, width)
+
+
+    # @ti.kernel
+    # def predefine_v(self):
+
+
+    def register_terminals(self, terminals):
+        num_t = terminals.shape[0]
+        self.terminal = ti.Vector.field(self.dim, dtype=self.accuracy)
+        ti.root.dense(ti.i, num_t).place(self.terminal)
+
+        for i in range(num_t):
+            self.terminal[i] = ti.Vector([terminals[i, 0], terminals[i, 1]])
+
+    @ti.kernel
+    def check_activity(self):
+        self.active_agents.deactivate()
+        for i in range(self.n_crafts[None]):
+            T_id = self.craft_camp[i]
+            T = self.terminal[T_id]
+
+            dis = self.x[i] - T
+            base = dis @ dis
+            # print('dis', dis, 'base', base)
+
+            if base > 1000.0:
+                self.active_agents.append(i)
+
+
+    @ti.kernel
     def init_grid(self):
         self.grid.fill(-1)
         self.gridCount.fill(0)
 
     @ti.kernel
     def init_ao_grid(self):
-        for i, j in self.ao_grid:
-            self.ao_grid[i, j] = -1
-            self.ao_gridCount[i] = 0
+        # for i, j in self.ao_grid:
+        #     self.ao_grid[i, j] = -1
+        #     self.ao_gridCount[i] = 0
+        self.ao_grid.fill(-1)
+        self.ao_gridCount.fill(0)
     @ti.kernel
     def insert_grid_pos(self):
-        for i in range(self.n_crafts[None]):
+        # for i in range(self.n_crafts[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
             indexV = ti.cast(self.x[i] * self.invGridR, ti.i32)
             # print(indexV)
             hash_index = self.get_cell_hash(indexV)
@@ -490,7 +578,9 @@ class Solver:
     def find_neighbour(self):
         # find neighbours and add neighbor pairs to a dynamic field
         self.n_neigbors[None] = 0
-        for i in range(self.n_crafts[None]):
+        # for i in range(self.n_crafts[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
             indexV = ti.cast(self.x[i] * self.invGridR, ti.i32) - ti.Vector([self.neighbor_grids, self.neighbor_grids])
             # print(indexV)
             for offset in ti.static(ti.grouped(self.stencil_range())):
@@ -512,7 +602,9 @@ class Solver:
 
     @ti.kernel
     def intersection_check(self):
-        for i in range(self.n_neigbors[None]):
+        # for i in range(self.n_neigbors[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
             a_id = self.candidate_neighbor[i][0]
             b_id = self.candidate_neighbor[i][1]
 
@@ -560,7 +652,10 @@ class Solver:
     @ti.kernel
     def init_grad(self):
         #Given x and v, calculate E
-        for i in range(self.n_crafts[None]):
+        # for i in range(self.n_crafts[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
+            # print(Id, i)
             self.gradient[i] = -self.v[i] / self.dt
             xx = - self.v[i]*self.dt
             XX = 0.0
@@ -580,7 +675,7 @@ class Solver:
             ab = self.x[a_id] - self.x[b_id]
             velr = self.v[a_id] - self.v[b_id]
             margin = - self.width[a_id] * self.width[a_id] * 4
-            d0 = self.searchR * 0.1
+            d0 = self.searchR
             for j in ti.static(ti.ndrange(self.dim)):
                 margin += ab[j] ** 2
                 d0 += (velr[j] ** 2) * 5
@@ -697,7 +792,9 @@ class Solver:
     @ti.kernel
     def compute_energy_E(self):
         # global_E = 0.0
-        for i in range(self.n_crafts[None]):
+        # for i in range(self.n_crafts[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
             # xx = -self.gradient[i] * self.alpha[None] - self.v[i]*self.dt
             xx = self.new_v[i] * self.alpha[None] - self.v[i] * self.dt
             XX = 0.0
@@ -713,19 +810,8 @@ class Solver:
     # @ti.kernel
     def line_search(self):
         # for i in range(self.n_neigbors[None]):
-        self.alpha[None] = 0.36
-        # print("PREV-E", self.prev_global_E[None])
-        # while self.alpha[None] > self.global_alpha_min:
-        #     self.intersection_check_result[None] = 0
-        #     self.intersection_check()
-        #
-        #     if self.intersection_check_result[None] == 0:
-        #         break
-        #     else:
-        #         self.alpha[None] *= self.alpha_dec
-        #
-        # print(self.alpha[None])
-        self.intersect()
+        self.alpha[None] = 1.0
+        # self.intersect()
 
         while self.alpha[None] > self.global_alpha_min:
             self.global_E[None] = 0.0
@@ -735,7 +821,8 @@ class Solver:
 
             # print('new_E:', self.global_E[None])
 
-            if self.global_E[None] < self.prev_global_E[None]:
+            if self.global_E[None] <= self.prev_global_E[None]:
+                # self.alpha[None] *= 1.1
                 break
             else:
                 self.alpha[None] *= self.alpha_dec
@@ -750,15 +837,24 @@ class Solver:
             else:
                 self.alpha[None] *= self.alpha_dec
 
+
+
+
+
+
     @ti.kernel
     def update_pos_32(self, new_alpha: ti.f32):
-        for i in range(self.n_crafts[None]):
+        # for i in range(self.n_crafts[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
             # self.x[i] -= self.gradient[i] * new_alpha
             self.x[i] += self.new_v[i] * new_alpha
 
     @ti.kernel
     def update_pos_64(self, new_alpha: ti.f64):
-        for i in range(self.n_crafts[None]):
+        # for i in range(self.n_crafts[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
             # self.x[i] -= self.gradient[i] * new_alpha
             self.x[i] += self.new_v[i] * new_alpha
 
@@ -786,7 +882,9 @@ class Solver:
     @ti.kernel
     def direct_solving(self):
         for i in self.new_v:
-            self.new_v[i] = -self.gradient[i]
+            self.new_v[i] = -tm.normalize(self.gradient[i])
+            # print(self.gradient[i])
+            # self.new_v[i] = -self.gradient[i]
 
     @ti.kernel
     def assemble_Value(self, x_mat: ti.types.ndarray(), single_x: ti.types.vector(2, dtype=ti.f32)):
@@ -815,40 +913,44 @@ class Solver:
 
     @ti.kernel
     def get_x_s(self, iters: ti.i32):
-        for i in range(self.n_crafts[None]):
+        # for i in range(self.n_crafts[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
             scale_value = self.new_v[i] * self.alpha[None]
             # ti.static_print(scale_value[0])
             self.x[i] += scale_value
-            for j in ti.static(range(2)):
-                self.s_i[iters, 2 * i + j] = scale_value[j]
+            # for j in ti.static(range(2)):
+            self.s_i[iters, Id] = scale_value
 
     @ti.kernel
     def tempora_save_grad(self, iters: ti.i32):
         # yk = gk+1 - gk; unless k=0, gk appears twice in total computation
-        for i in range(self.n_crafts[None]):
+        # for i in range(self.n_crafts[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
             if iters > 0:
-                # print(self.gradient[i])
-                for j in ti.static(range(2)):
-                    self.y_i[iters, 2 * i + j] -= self.gradient[i][j]
-                    self.y_i[iters - 1, 2 * i + j] += self.gradient[i][j]
+                self.y_i[iters, Id] -= self.gradient[i]
+                self.y_i[iters - 1, Id] += self.gradient[i]
+                #The Id the the sequential id for each active flag, i means the id of ith agent
 
                     # print(iters, self.y_i[iters, 2 * i + j])
             else:
-                for j in ti.static(range(2)):
-                    self.y_i[iters, 2 * i + j] -= self.gradient[i][j]
+                self.y_i[iters, Id] -= self.gradient[i]
 
 
 
     @ti.kernel
     def get_rho_scale(self, iters: ti.i32):
-        for i in range(self.dim * self.n_crafts[None]):
-            self.rho_i[iters] += self.y_i[iters, i] * self.s_i[iters, i]
-            self.tmp_value[None] += self.y_i[iters, i] ** 2
+        # for i in range(self.dim * self.n_crafts[None]):
+        for Id in self.active_agents:
+            # i = self.active_agents[Id]
+            self.rho_i[iters] += self.y_i[iters, Id] @ self.s_i[iters, Id]
+            self.tmp_value[None] += self.y_i[iters, Id] @ self.y_i[iters, Id]
         # print('rho scale', iters, self.rho_i[iters])
         # print('tmp scale', iters, self.tmp_value[None])
+
         if self.rho_i[iters] < 1e-6:
             self.rho_i[iters] = 1.0
-
         self.tmp_value[None] /= self.rho_i[iters]
 
     @ti.kernel
@@ -864,9 +966,9 @@ class Solver:
     @ti.kernel
     def apply_first_loop_1(self, iters: ti.i32):
         self.alpha_i[iters] = 0.0  # fresh
-        for i in range(self.n_crafts[None]):
-            for j in ti.static(range(2)):
-                self.alpha_i[iters] += self.gradient[i][j] * self.s_i[iters, 2*i+j]
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
+            self.alpha_i[iters] += self.gradient[i] @ self.s_i[iters, Id]
         # print('alpha before rho', self.alpha_i[iters])
         self.alpha_i[iters] /= self.rho_i[iters]
         # print(self.rho_i[iters])
@@ -874,41 +976,45 @@ class Solver:
 
     @ti.kernel
     def apply_first_loop_2(self, iters: ti.i32):
-        for i in range(self.n_crafts[None]):
-            for j in ti.static(range(2)):
-                self.gradient[i][j] -= self.alpha_i[iters] * self.y_i[iters, 2*i+j]
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
+            self.gradient[i] -= self.alpha_i[iters] * self.y_i[iters, Id]
 
     @ti.kernel
     def get_r_32(self, scale: ti.f32):
         #TODO: What if initialized inv-H is not gamma*I
-        for i in range(self.n_crafts[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
             self.gradient[i] *= scale
 
     @ti.kernel
     def get_r_64(self, scale: ti.f64):
         #TODO: What if initialized inv-H is not gamma*I
-        for i in range(self.n_crafts[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
             self.gradient[i] *= scale
 
     @ti.kernel
     def apply_second_loop_1(self, iters: ti.i32):
-        for i in range(self.n_crafts[None]):
-            for j in ti.static(range(2)):
-                self.beta_i[None] += self.y_i[iters, 2*i+j] * self.gradient[i][j]
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
+            self.beta_i[None] += self.y_i[iters, Id] @ self.gradient[i]
         self.beta_i[None] /= self.rho_i[iters]
 
     @ti.kernel
     def apply_second_loop_2(self, iters: ti.i32):
         loop2_scale = self.alpha_i[iters] - self.beta_i[None]
-        for i in range(self.n_crafts[None]):
-            for j in ti.static(range(2)):
-                self.gradient[i][j] += self.s_i[iters, 2*i+j] * loop2_scale
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
+            self.gradient[i] += self.s_i[iters, Id] * loop2_scale
 
     @ti.kernel
     def set_direction(self):
-        for i in self.new_v:
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
             self.new_v[i] = -tm.normalize(self.gradient[i])
             # self.new_v[i] = -self.gradient[i]
+            # print('set_d', self.gradient[i] )
             # print(self.new_v[i])
             # print(self.new_v[i])
 
@@ -929,7 +1035,8 @@ class Solver:
             if self.tmp_value[None] < 1e-6:
                 scale = 1.0
             else:
-                scale = 1.0 / self.tmp_value[None]
+                scale = 1 / self.tmp_value[None]
+            # scale = 1.0
             # print('look1', iters - 1)
 
             # self.help_init_inv_H(scale)
@@ -968,6 +1075,7 @@ class Solver:
 
         # self.process_action(actions)
         self.init_grid()
+        # self.init_ao_grid()
         self.insert_grid_pos()
         self.find_neighbour()
         # print(self.candidate_neighbor)
@@ -1004,22 +1112,23 @@ class Solver:
 
 
 
-    def optimize_LBFGS(self, actions):
+    def optimize_LBFGS(self):
         iter = 0
         self.clear_y_s_rho()
-        self.process_action(actions)
+        # self.process_action(actions)
 
         while iter < self.max_iters:
             self.single_step('L-BFGS', iter)
             iter += 1
             if self.alpha[None] < self.global_alpha_min:
-                # print("finished:", iter)
+                print("finished:", iter)
                 # print(self.alpha[None])
                 # craft_info = self.render_info()
                 break
 
         craft_info = self.render_info()
-        # print("finished:", iter)
+        self.check_activity()
+        print("finished:", iter)
 
         return craft_info
 
@@ -1126,20 +1235,28 @@ class Solver:
     @ti.kernel
     def get_render_info(self, type: ti.types.ndarray(), camp: ti.types.ndarray(), x: ti.types.ndarray(),
                         v: ti.types.ndarray()):
-        for i in range(self.n_crafts[None]):
-            type[i] = self.craft_type[i]
-            camp[i] = self.craft_camp[i]
+        # for i in range(self.n_crafts[None]):
+        for Id in self.active_agents:
+            i = self.active_agents[Id]
+            type[Id] = self.craft_type[i]
+            camp[Id] = self.craft_camp[i]
 
             for j in ti.static(range(self.dim)):
-                x[i, j] = self.x[i][j]
-                v[i, j] = self.v[i][j]
+                x[Id, j] = self.x[i][j]
+                v[Id, j] = self.v[i][j]
 
+
+    @ti.kernel
+    def get_render_len(self) -> int:
+        render_len = self.active_agents.length()
+        return render_len
 
     def render_info(self):
-        np_x = np.ndarray((self.n_crafts[None], self.dim), dtype=np.float32)
-        np_v = np.ndarray((self.n_crafts[None], self.dim), dtype=np.float32)
-        np_type = np.ndarray((self.n_crafts[None],), dtype=np.float32)
-        np_camp = np.ndarray((self.n_crafts[None],), dtype=np.float32)
+        render_len = self.get_render_len()
+        np_x = np.ndarray((render_len, self.dim), dtype=np.float32)
+        np_v = np.ndarray((render_len, self.dim), dtype=np.float32)
+        np_type = np.ndarray((render_len,), dtype=np.float32)
+        np_camp = np.ndarray((render_len,), dtype=np.float32)
 
         self.get_render_info(np_type, np_camp, np_x, np_v)
 
