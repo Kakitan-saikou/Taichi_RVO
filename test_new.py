@@ -19,23 +19,23 @@ x_coord = np.linspace(200, 650, 30)
 grid_x, grid_y = np.meshgrid(x_coord, x_coord)
 x = np.column_stack((grid_x.ravel(), grid_y.ravel()))
 
-# x = np.random.uniform(low=200, high=650, size=(900, 2))
-combined_actions = np.random.uniform(low=-0.5, high=0.5, size=(900, 2))
+x = np.random.uniform(low=200, high=650, size=(900, 2))
+combined_actions = np.random.uniform(low=-0.5, high=0.5, size=(900, 2)) * 2
 # combined_actions = np.ones((900,900)) * 2.0
 # combined_actions = np.array([[0, 1]] * 500) * 0.1
 craft_type = np.ones(900)
 craft_camp = np.ones(900)
 length = np.ones(900)
-width = np.ones(900) * 1
+width = np.ones(900) * 2.0
 
-input_list = [[[100, 100], [200,200], [100, 300]], [[700, 700], [800, 700], [700, 800]]]
+input_list = [[[100, 100], [200,200], [100, 300]], [[700, 700], [800, 700], [700, 800]], [[100, 100], [100, 800], [800, 800], [800, 100]]]
 
-MR = Solver('L-BFGS', [1000, 1000], 3, 5.0, 3.0, accuracy='f32', substeps=1)
+MR = Solver('L-BFGS', [1000, 1000], 3, 5.0, 3.0, accuracy='f32', substeps=1, control_freq=1)
 MR.init_env(craft_type, craft_camp, x, length, width, input_list)
 info = MR.reset()
 # print(info)
 
-for frame in range(800):
+for frame in range(1800):
     # combined_actions = np.array([[0, 0.2], [0, 0.2]])
     # combined_actions = np.random.uniform(low=-0.5, high=0.5, size=(400, 2))
     info = MR.optimize_LBFGS(combined_actions)
