@@ -1171,9 +1171,13 @@ class Solver:
                 x[Id, j] = self.x[i][j]
                 v[Id, j] = self.v[i][j]
 
+    @ti.kernel
+    def get_render_len(self) -> int:
+        render_len = self.active_agents.length()
+        return render_len
 
     def render_info(self):
-        render_len = self.active_agents.length()
+        render_len = self.get_render_len()
         np_x = np.ndarray((render_len, self.dim), dtype=np.float32)
         np_v = np.ndarray((render_len, self.dim), dtype=np.float32)
         np_type = np.ndarray((render_len,), dtype=np.float32)
